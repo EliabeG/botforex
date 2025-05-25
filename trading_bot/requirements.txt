@@ -1,5 +1,5 @@
 # Core Python packages
-python==3.12.*
+# (O interpretador Python é gerenciado pelo ambiente virtual; não é instalado via pip)
 
 # Async programming
 asyncio==3.4.3
@@ -55,14 +55,14 @@ pytest-mock==3.12.0
 
 # Development tools
 black==23.12.1  # Formatação de código
-flake8==6.1.0  # Linting
-mypy==1.7.1  # Type checking
+flake8==6.1.0   # Linting
+mypy==1.7.1     # Type checking
 pre-commit==3.6.0
 
 # Performance optimization
-uvloop==0.19.0  # Event loop otimizado
-cython==3.0.7  # Para extensões críticas
-numba==0.58.1  # JIT compilation
+uvloop==0.19.0   # Event loop otimizado
+cython==3.0.7    # Para extensões críticas
+numba==0.58.1    # JIT compilation
 
 # Visualization (para dashboard)
 plotly==5.18.0
@@ -70,7 +70,7 @@ dash==2.14.2
 
 # Utilities
 python-dateutil==2.8.2
-click==8.1.7  # CLI
+click==8.1.7     # CLI
 tenacity==8.2.3  # Retry logic
 cachetools==5.3.2  # Caching utilities
 
@@ -87,11 +87,11 @@ quickfix==1.15.1
 
 # Additional ML libraries
 tensorflow==2.15.0  # Para modelos deep learning
-torch==2.1.2  # Alternativa ao TensorFlow
-lightgbm==4.2.0  # Gradient boosting alternativo
+torch==2.1.2        # Alternativa ao TensorFlow
+lightgbm==4.2.0     # Gradient boosting alternativo
 
 # Market data
-yfinance==0.2.33  # Para dados históricos adicionais
+yfinance==0.2.33    # Para dados históricos adicionais
 alpha-vantage==2.3.1  # API de dados alternativa
 
 # Backtesting
@@ -109,10 +109,10 @@ vaderSentiment==3.3.2
 
 # Infrastructure
 docker==7.0.0
-fabric==3.2.2  # Deploy automation
+fabric==3.2.2    # Deploy automation
 paramiko==3.4.0  # SSH
 
 # Cloud providers (opcional)
-boto3==1.34.11  # AWS
-google-cloud-storage==2.13.0  # GCP
+boto3==1.34.11               # AWS
+google-cloud-storage==2.13.0 # GCP
 azure-storage-blob==12.19.0  # Azure
