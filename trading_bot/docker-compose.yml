@@ -1,0 +1,109 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: eurusd_trading_bot
+    restart: unless-stopped
+    environment:
+      - TRADING_MODE=live
+      - TRADING_LOGIN=28502146
+      - TRADING_PASSWORD=FmpQ32rW
+      - TRADING_WEB_API_TOKEN_ID=a7e46c03-fc43-4cff-870c-d2a425b196f3
+      - TRADING_WEB_API_TOKEN_KEY=4J7j5Y8DZ27d8KJp
+      - TRADING_WEB_API_TOKEN_SECRET=d8fJKY4JCqZCdFP7ttTmtq3hbN9ZdwytXxa4fEWz4r3ZNtY7Mz4aXBzXf8G8YdEg
+      - REDIS_HOST=redis
+      - TZ=UTC
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - ./config:/app/config
+    ports:
+      - "9090:9090"  # Prometheus metrics
+    depends_on:
+      - redis
+      - prometheus
+    networks:
+      - trading-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - trading-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: trading_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9091:9090"
+    networks:
+      - trading-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trading_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - trading-network
+
+  # Opcional: Jupyter para análise
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: trading_jupyter
+    restart: unless-stopped
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data:ro
+    ports:
+      - "8888:8888"
+    networks:
+      - trading-network
+    profiles:
+      - analysis
+
+networks:
+  trading-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:

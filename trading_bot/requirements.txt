@@ -1,0 +1,118 @@
+# Core Python packages
+python==3.12.*
+
+# Async programming
+asyncio==3.4.3
+aiohttp==3.9.1
+websockets==12.0
+
+# Data processing
+numpy==1.26.2
+pandas==2.1.4
+pyarrow==14.0.2  # Para arquivos Parquet
+
+# Technical indicators
+TA-Lib==0.4.28
+pandas-ta==0.3.14b0
+
+# Machine Learning
+scikit-learn==1.3.2
+optuna==3.5.0  # Otimização Bayesiana
+joblib==1.3.2
+xgboost==2.0.3  # Para estratégias ML avançadas
+
+# Database and caching
+redis==5.0.1
+aioredis==2.0.1
+sqlalchemy==2.0.23
+aiosqlite==0.19.0
+
+# API and networking
+requests==2.31.0
+httpx==0.25.2  # Cliente HTTP assíncrono
+cryptography==41.0.7  # Para HMAC e autenticação
+
+# Monitoring and logging
+prometheus-client==0.19.0
+python-json-logger==2.0.7
+colorlog==6.8.0
+
+# Time and scheduling
+apscheduler==3.10.4
+pytz==2023.3
+ntplib==0.4.0
+
+# Configuration
+python-dotenv==1.0.0
+pydantic==2.5.2
+pydantic-settings==2.1.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+
+# Development tools
+black==23.12.1  # Formatação de código
+flake8==6.1.0  # Linting
+mypy==1.7.1  # Type checking
+pre-commit==3.6.0
+
+# Performance optimization
+uvloop==0.19.0  # Event loop otimizado
+cython==3.0.7  # Para extensões críticas
+numba==0.58.1  # JIT compilation
+
+# Visualization (para dashboard)
+plotly==5.18.0
+dash==2.14.2
+
+# Utilities
+python-dateutil==2.8.2
+click==8.1.7  # CLI
+tenacity==8.2.3  # Retry logic
+cachetools==5.3.2  # Caching utilities
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==2.0.0
+
+# Docker and deployment
+gunicorn==21.2.0
+python-multipart==0.0.6
+
+# FIX Protocol (backup)
+quickfix==1.15.1
+
+# Additional ML libraries
+tensorflow==2.15.0  # Para modelos deep learning
+torch==2.1.2  # Alternativa ao TensorFlow
+lightgbm==4.2.0  # Gradient boosting alternativo
+
+# Market data
+yfinance==0.2.33  # Para dados históricos adicionais
+alpha-vantage==2.3.1  # API de dados alternativa
+
+# Backtesting
+backtrader==1.9.78.123
+bt==0.2.10
+zipline-reloaded==3.0.1
+
+# Risk metrics
+pyfolio==0.9.2
+empyrical==0.5.5
+
+# News and sentiment (para estratégias news-aware)
+newsapi-python==0.2.7
+vaderSentiment==3.3.2
+
+# Infrastructure
+docker==7.0.0
+fabric==3.2.2  # Deploy automation
+paramiko==3.4.0  # SSH
+
+# Cloud providers (opcional)
+boto3==1.34.11  # AWS
+google-cloud-storage==2.13.0  # GCP
+azure-storage-blob==12.19.0  # Azure
