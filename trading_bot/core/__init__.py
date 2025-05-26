@@ -3,7 +3,7 @@
 from .orchestrator import TradingOrchestrator
 from .market_regime import MarketRegimeDetector, MarketRegime
 from .data_manager import DataManager
-from .execution_engine import ExecutionEngine, Order, OrderStatus
+from .execution_engine import ExecutionEngine, Order, OrderStatus, OrderType # Adicionado OrderType
 
 __all__ = [
     'TradingOrchestrator',
@@ -12,7 +12,8 @@ __all__ = [
     'DataManager',
     'ExecutionEngine',
     'Order',
-    'OrderStatus'
+    'OrderStatus',
+    'OrderType' # Adicionado OrderType
 ]
 
 # ===================================

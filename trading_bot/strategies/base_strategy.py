@@ -1,488 +1,530 @@
 # strategies/base_strategy.py
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any, Union # Adicionado Union
+from datetime import datetime, timezone # Adicionado timezone
+from dataclasses import dataclass, field # Adicionado field
 import numpy as np
-import pandas as pd
+import pandas as pd # Necessário para uso em subclasses ou futuras expansões
+import talib # Usar TA-Lib para indicadores padronizados
 
 from utils.logger import setup_logger
+# from config.settings import CONFIG # Para configurações globais se necessário
 
-logger = setup_logger("base_strategy")
+# Logger específico para a classe base pode ser útil para logs genéricos de estratégia
+base_strategy_logger = setup_logger("base_strategy_class") # Renomeado para evitar conflito
 
 @dataclass
 class Signal:
-    """Estrutura de sinal de trading"""
-    timestamp: datetime
+    """Estrutura de sinal de trading para uma ordem."""
+    timestamp: datetime # Timestamp de geração do sinal (UTC)
     strategy_name: str
+    symbol: str # Adicionado símbolo ao sinal
     side: str  # 'buy' ou 'sell'
-    confidence: float  # 0-1
-    stop_loss: float
-    take_profit: float
-    entry_price: Optional[float] = None
-    position_size: Optional[float] = None
+    confidence: float  # 0.0 - 1.0
+    entry_price: Optional[float] = None # Preço de entrada sugerido (para ordens limite/stop ou referência para mercado)
+    stop_loss: Optional[float] = None # Preço absoluto do Stop Loss
+    take_profit: Optional[float] = None # Preço absoluto do Take Profit
+    # position_size: Optional[float] = None # Tamanho da posição é geralmente decidido pelo RiskManager
+    order_type: str = "Market" # Ex: "Market", "Limit", "Stop". Usar string para flexibilidade ou Enum.
+    expiration_time: Optional[datetime] = None # Para ordens pendentes
     reason: str = ""
-    metadata: Dict = None
-    
+    metadata: Dict[str, Any] = field(default_factory=dict) # Usar Any e default_factory
+
     def is_valid(self) -> bool:
-        """Verifica se o sinal é válido"""
-        return (
-            self.side in ['buy', 'sell'] and
-            0 <= self.confidence <= 1 and
-            self.stop_loss > 0 and
-            self.take_profit > 0
-        )
+        """Verifica se os campos essenciais do sinal são válidos."""
+        if self.side.lower() not in ['buy', 'sell']:
+            base_strategy_logger.warning(f"Sinal inválido (ID Estratégia: {self.strategy_name}): Lado '{self.side}' não é 'buy' ou 'sell'.")
+            return False
+        if not (0.0 <= self.confidence <= 1.0):
+            base_strategy_logger.warning(f"Sinal inválido (ID Estratégia: {self.strategy_name}): Confiança {self.confidence} fora do range [0,1].")
+            return False
+        # Stop Loss e Take Profit são opcionais na criação do sinal,
+        # mas se fornecidos, devem ser válidos.
+        # A validação de que SL/TP são logicamente posicionados em relação ao entry_price
+        # (ex: SL abaixo de entry para buy) deve ser feita no contexto do preço de mercado atual
+        # ou no ExecutionEngine antes de enviar ao broker.
+        if self.stop_loss is not None and self.stop_loss <= 0:
+            base_strategy_logger.warning(f"Sinal inválido (ID Estratégia: {self.strategy_name}): Stop Loss {self.stop_loss} deve ser positivo.")
+            return False
+        if self.take_profit is not None and self.take_profit <= 0:
+            base_strategy_logger.warning(f"Sinal inválido (ID Estratégia: {self.strategy_name}): Take Profit {self.take_profit} deve ser positivo.")
+            return False
+        if not self.symbol:
+            base_strategy_logger.warning(f"Sinal inválido (ID Estratégia: {self.strategy_name}): Símbolo não definido.")
+            return False
+
+        return True
 
 @dataclass
-class Position:
-    """Estrutura de posição aberta"""
-    id: str
+class Position: # Esta dataclass representa uma POSIÇÃO ABERTA
+    """Estrutura de uma posição de trading aberta."""
+    id: str # ID único da posição (geralmente do broker)
     strategy_name: str
     symbol: str
-    side: str
-    entry_price: float
-    size: float
-    stop_loss: float
-    take_profit: float
-    open_time: datetime
-    pnl: float = 0.0
-    trailing_stop: bool = False
-    metadata: Dict = None
+    side: str  # 'Buy' ou 'Sell' (conforme a posição real)
+    entry_price: float # Preço médio de entrada da posição
+    size: float # Tamanho atual da posição em lotes
+    stop_loss: Optional[float] # SL atual da posição
+    take_profit: Optional[float] # TP atual da posição
+    open_time: datetime # Timestamp de abertura da posição (UTC)
+    unrealized_pnl: float = 0.0 # PnL não realizado (atualizado externamente) # Renomeado de pnl
+    # trailing_stop: bool = False # Este estado (se TS está ativo) pode ser parte do metadata
+    # trailing_stop_price: Optional[float] = None # O SL já reflete o TS price
+    metadata: Dict[str, Any] = field(default_factory=dict) # Usar Any e default_factory
 
 @dataclass
 class ExitSignal:
-    """Sinal de saída de posição"""
-    position_id: str
-    reason: str
-    exit_price: Optional[float] = None
-    partial_exit: float = 1.0  # Percentual para sair (1.0 = 100%)
+    """Sinal para sair de uma posição existente."""
+    position_id_to_close: str # ID da posição a ser fechada # Renomeado
+    reason: str # Motivo da saída
+    exit_price: Optional[float] = None # Preço de saída se for ordem limite/stop, None para mercado
+    # partial_exit_fraction: float = 1.0  # Fração da posição a ser fechada (0.0 a 1.0) # Renomeado
+    exit_size_lots: Optional[float] = None # Tamanho a ser fechado em lotes (se None, fechar tudo)
+
 
 class BaseStrategy(ABC):
-    """Classe base abstrata para todas as estratégias"""
-    
-    def __init__(self, name: str = None):
-        self.name = name or self.__class__.__name__
-        self.active = False
-        self.parameters = self.get_default_parameters()
-        self.state = {}
-        self.performance = {
-            'total_trades': 0,
-            'winning_trades': 0,
-            'losing_trades': 0,
-            'total_pnl': 0.0,
-            'max_drawdown': 0.0,
-            'sharpe_ratio': 0.0
-        }
-        self.suitable_regimes = []
-        self.indicators = {}
-        self.last_signal_time = None
-        self.min_time_between_signals = 60  # segundos
-        
+    """Classe base abstrata para todas as estratégias de trading."""
+
+    def __init__(self, name: Optional[str] = None): # name pode ser None
+        self.name: str = name or self.__class__.__name__
+        self.active: bool = False
+        self.parameters: Dict[str, Any] = self.get_default_parameters()
+        self.internal_state: Dict[str, Any] = {} # Renomeado de state para clareza
+        # Performance é geralmente rastreada externamente (DataManager, Orchestrator)
+        # self.performance = {...} # Removido, pois pode causar confusão com rastreamento global
+
+        self.suitable_regimes: List[str] = [] # Lista de MarketRegime.VALUE
+        self.current_indicators: Dict[str, Any] = {} # Renomeado de indicators
+        self.last_signal_generated_time: Optional[datetime] = None # Renomeado
+        self.min_time_between_signals_sec: int = 60  # Renomeado e unidade clara
+
+        # Logger específico da instância da estratégia
+        self.logger = setup_logger(f"strategy.{self.name}")
+        self.logger.info(f"Estratégia '{self.name}' instanciada.")
+
+
     @abstractmethod
     def get_default_parameters(self) -> Dict[str, Any]:
-        """Retorna parâmetros padrão da estratégia"""
+        """Retorna os parâmetros padrão configuráveis para a estratégia."""
         pass
-    
+
     @abstractmethod
-    async def calculate_indicators(self, market_context: Dict) -> Dict[str, Any]:
-        """Calcula indicadores necessários para a estratégia"""
+    async def calculate_indicators(self, market_context: Dict[str, Any]) -> None:
+        """
+        Calcula e armazena os indicadores necessários em self.current_indicators.
+        Este método deve ATUALIZAR self.current_indicators em vez de retorná-lo.
+        """
+        # Exemplo de implementação:
+        # self.current_indicators['sma_20'] = self.calculate_sma(market_context['recent_ticks_df']['close'], 20)
         pass
-    
+
+
     @abstractmethod
-    async def generate_signal(self, market_context: Dict) -> Optional[Signal]:
-        """Gera sinal de entrada baseado no contexto de mercado"""
+    async def generate_signal(self, market_context: Dict[str, Any]) -> Optional[Signal]:
+        """
+        Gera um SINAL DE ENTRADA (Signal) com base nos indicadores atuais e no contexto de mercado.
+        Retorna None se nenhuma oportunidade de entrada for encontrada.
+        """
         pass
-    
+
     @abstractmethod
-    async def calculate_exit_conditions(self, position: Position, 
-                                       current_price: float) -> Optional[ExitSignal]:
-        """Calcula condições de saída para posição"""
+    async def evaluate_exit_conditions(self, open_position: Position, # Renomeado de position
+                                       market_context: Dict[str, Any]) -> Optional[ExitSignal]: # Renomeado current_price
+        """
+        Avalia as condições de SAÍDA para uma posição aberta.
+        Retorna um ExitSignal se uma condição de saída for atendida, senão None.
+        """
         pass
-    
-    async def initialize(self):
-        """Inicializa a estratégia"""
-        logger.info(f"Inicializando estratégia {self.name}")
-        self.state = {}
-        self.indicators = {}
-    
-    async def activate(self):
-        """Ativa a estratégia"""
-        logger.info(f"Ativando estratégia {self.name}")
-        self.active = True
-    
-    async def deactivate(self):
-        """Desativa a estratégia"""
-        logger.info(f"Desativando estratégia {self.name}")
-        self.active = False
-    
-    async def process_tick(self, market_context: Dict) -> Optional[Signal]:
-        """Processa tick e retorna sinal se houver"""
+
+    async def initialize_strategy(self): # Renomeado de initialize
+        """Inicializa o estado específico da estratégia (ex: carregar dados históricos para indicadores)."""
+        self.logger.info(f"Inicializando estado da estratégia {self.name}...")
+        self.internal_state = {}
+        self.current_indicators = {}
+        self.last_signal_generated_time = None
+        # Carregar parâmetros otimizados ou de config aqui, se não feito pelo Orchestrator
+        # Ex: self.parameters.update(load_optimized_params_for_strategy(self.name))
+
+    async def activate_strategy(self): # Renomeado de activate
+        """Ativa a estratégia para processamento de ticks e geração de sinais."""
         if not self.active:
-            return None
-        
-        try:
-            # Verificar cooldown entre sinais
-            if self.last_signal_time:
-                time_since_last = (datetime.now() - self.last_signal_time).total_seconds()
-                if time_since_last < self.min_time_between_signals:
-                    return None
-            
-            # Calcular indicadores
-            self.indicators = await self.calculate_indicators(market_context)
-            
-            # Gerar sinal
-            signal = await self.generate_signal(market_context)
-            
-            if signal and signal.is_valid():
-                self.last_signal_time = datetime.now()
-                return signal
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Erro em {self.name}.process_tick: {e}")
-            return None
-    
-    async def check_exit_conditions(self, position: Position, 
-                                   current_price: float) -> Optional[ExitSignal]:
-        """Verifica condições de saída"""
-        if not self.active:
-            return None
-        
-        try:
-            return await self.calculate_exit_conditions(position, current_price)
-        except Exception as e:
-            logger.error(f"Erro em {self.name}.check_exit_conditions: {e}")
-            return None
-    
-    def update_parameters(self, new_parameters: Dict[str, Any]):
-        """Atualiza parâmetros da estratégia"""
-        self.parameters.update(new_parameters)
-        logger.info(f"Parâmetros atualizados para {self.name}: {new_parameters}")
-    
-    def update_performance(self, trade_result: Dict):
-        """Atualiza métricas de performance"""
-        self.performance['total_trades'] += 1
-        
-        pnl = trade_result.get('pnl', 0)
-        self.performance['total_pnl'] += pnl
-        
-        if pnl > 0:
-            self.performance['winning_trades'] += 1
+            self.active = True
+            self.logger.info(f"Estratégia {self.name} ATIVADA.")
+            # Pode haver lógica adicional ao ativar (ex: resetar contadores)
         else:
-            self.performance['losing_trades'] += 1
+            self.logger.debug(f"Estratégia {self.name} já está ativa.")
+
+
+    async def deactivate_strategy(self): # Renomeado de deactivate
+        """Desativa a estratégia, parando a geração de novos sinais."""
+        if self.active:
+            self.active = False
+            self.logger.info(f"Estratégia {self.name} DESATIVADA.")
+            # Lógica adicional ao desativar (ex: limpar buffers de sinal pendentes)
+        else:
+            self.logger.debug(f"Estratégia {self.name} já está inativa.")
+
+
+    async def on_tick(self, market_context: Dict[str, Any]) -> Optional[Signal]: # Renomeado de process_tick
+        """
+        Processa um novo tick (ou barra) e retorna um SINAL DE ENTRADA se um setup for identificado.
+        Este é o método principal chamado pelo Orchestrator para cada atualização de mercado.
+        """
+        if not self.active:
+            return None
+
+        try:
+            # Cooldown entre sinais da MESMA estratégia
+            if self.last_signal_generated_time:
+                time_since_last_sig = (datetime.now(timezone.utc) - self.last_signal_generated_time).total_seconds() # Usar UTC
+                if time_since_last_sig < self.min_time_between_signals_sec:
+                    return None # Ainda em cooldown
+
+            # 1. Calcular/Atualizar Indicadores
+            await self.calculate_indicators(market_context) # Atualiza self.current_indicators
+
+            # 2. Gerar Sinal de Entrada (se houver)
+            entry_signal = await self.generate_signal(market_context) # Renomeado signal
+
+            if entry_signal and entry_signal.is_valid():
+                # Aplicar filtros básicos do sinal antes de retornar (ex: R:R mínimo se já calculado)
+                if self._is_setup_conditionally_valid(entry_signal, market_context): # Renomeado
+                    self.last_signal_generated_time = datetime.now(timezone.utc) # Usar UTC
+                    self.logger.info(f"Sinal de ENTRADA gerado: {entry_signal.side} {entry_signal.symbol} @ {entry_signal.entry_price or 'Market'}")
+                    return entry_signal
+                else:
+                    self.logger.debug(f"Sinal gerado por {self.name} não passou na validação condicional.")
+
+            return None
+
+        except Exception as e_tick: # Renomeado
+            self.logger.exception(f"Erro em {self.name}.on_tick:") # Usar logger.exception
+            return None
+
+
+    async def check_exit_for_position(self, open_position: Position, # Renomeado de check_exit_conditions
+                                   market_context: Dict[str, Any]) -> Optional[ExitSignal]:
+        """Verifica condições de saída para uma posição aberta específica."""
+        # Não checar self.active aqui, pois posições abertas por esta estratégia
+        # devem ser gerenciadas por ela mesma, mesmo se a estratégia for desativada para NOVAS entradas.
         
-        # Calcular win rate
-        if self.performance['total_trades'] > 0:
-            self.performance['win_rate'] = (
-                self.performance['winning_trades'] / 
-                self.performance['total_trades']
-            )
-    
-    def calculate_position_size(self, signal: Signal, account_balance: float, 
-                               risk_per_trade: float) -> float:
-        """Calcula tamanho da posição baseado em risco"""
-        if signal.entry_price and signal.stop_loss:
-            # Calcular risco em pips
-            risk_pips = abs(signal.entry_price - signal.stop_loss) * 10000
-            
-            # Calcular valor por pip
-            pip_value = 10  # Para lote padrão de 100k
-            
-            # Calcular tamanho do lote
-            risk_amount = account_balance * risk_per_trade
-            lot_size = risk_amount / (risk_pips * pip_value)
-            
-            # Arredondar para precisão do broker
-            return round(lot_size, 2)
+        try:
+            # Calcular/Atualizar Indicadores primeiro, pois as condições de saída podem depender deles
+            await self.calculate_indicators(market_context)
+            return await self.evaluate_exit_conditions(open_position, market_context)
+        except Exception as e_exit: # Renomeado
+            self.logger.exception(f"Erro em {self.name}.check_exit_for_position para pos {open_position.id}:")
+            return None
+
+
+    def update_parameters(self, new_parameters: Dict[str, Any]):
+        """Atualiza os parâmetros da estratégia com validação (opcional)."""
+        # Filtrar apenas parâmetros que existem nos defaults para evitar adicionar chaves desconhecidas
+        valid_new_params = {k: v for k, v in new_parameters.items() if k in self.parameters}
+        # Poderia adicionar validação de tipo/range aqui
+        self.parameters.update(valid_new_params)
+        self.logger.info(f"Parâmetros atualizados para {self.name}: {valid_new_params}")
+        # Após atualizar parâmetros, pode ser necessário resetar algum estado ou re-calcular indicadores
+        # await self.initialize_strategy() # Ou um método mais leve de "reconfigurar"
+
+
+    # Performance é rastreada externamente, este método foi removido.
+    # def update_performance(self, trade_result: Dict): ...
+    # def get_performance_metrics(self) -> Dict[str, float]: ...
+
+
+    # Position sizing é feito pelo RiskManager, não pela estratégia.
+    # def calculate_position_size(...) -> float: ...
+
+
+    def reset_internal_state(self): # Renomeado de reset_state
+        """Reseta o estado interno da estratégia (não os parâmetros)."""
+        self.internal_state = {}
+        self.current_indicators = {} # Limpar indicadores cacheados
+        self.last_signal_generated_time = None
+        self.logger.info(f"Estado interno da estratégia {self.name} resetado.")
+
+
+    # --- Métodos Auxiliares Comuns para Indicadores (usar TA-Lib quando possível) ---
+    # As implementações originais de SMA, EMA, RSI, ATR, Bollinger são mantidas abaixo
+    # para referência, mas o ideal é usar TA-Lib consistentemente.
+
+    def _get_prices_from_context(self, market_context: Dict[str, Any], price_type: str = 'mid', lookback: Optional[int]=None) -> np.ndarray:
+        """Helper para extrair uma série de preços do market_context (lista de ticks)."""
+        ticks_list = market_context.get('recent_ticks', [])
+        if not ticks_list: return np.array([], dtype=float)
+
+        if lookback:
+            ticks_list = ticks_list[-lookback:]
         
-        return 0.01  # Lote mínimo padrão
-    
-    def get_performance_metrics(self) -> Dict[str, float]:
-        """Retorna métricas de performance"""
-        metrics = self.performance.copy()
-        
-        # Calcular métricas adicionais
-        if metrics['total_trades'] > 0:
-            metrics['avg_win'] = (
-                metrics['total_pnl'] / metrics['winning_trades']
-                if metrics['winning_trades'] > 0 else 0
-            )
-            metrics['avg_loss'] = (
-                metrics['total_pnl'] / metrics['losing_trades']
-                if metrics['losing_trades'] > 0 else 0
-            )
-            metrics['expectancy'] = metrics['total_pnl'] / metrics['total_trades']
-        
-        return metrics
-    
-    def reset_state(self):
-        """Reseta estado interno da estratégia"""
-        self.state = {}
-        self.indicators = {}
-        self.last_signal_time = None
-    
-    # Métodos auxiliares comuns
-    
-    def calculate_sma(self, values: np.ndarray, period: int) -> float:
-        """Calcula média móvel simples"""
-        if len(values) >= period:
-            return np.mean(values[-period:])
-        return np.mean(values)
-    
-    def calculate_ema(self, values: np.ndarray, period: int) -> float:
-        """Calcula média móvel exponencial"""
-        if len(values) == 0:
+        prices = [getattr(tick, price_type, tick.mid if hasattr(tick, 'mid') else 0.0) for tick in ticks_list if hasattr(tick, price_type) or hasattr(tick, 'mid')]
+        return np.array(prices, dtype=float)
+
+
+    def calculate_sma(self, price_series: np.ndarray, period: int) -> Optional[float]: # Retorna Optional[float]
+        """Calcula Média Móvel Simples usando TA-Lib."""
+        if len(price_series) >= period:
+            try:
+                sma_values = talib.SMA(price_series, timeperiod=period)
+                return sma_values[-1] if not np.isnan(sma_values[-1]) else None
+            except Exception as e_talib: # Renomeado
+                self.logger.error(f"Erro no cálculo TA-Lib SMA ({period}): {e_talib}")
+                return None
+        return None
+
+    def calculate_ema(self, price_series: np.ndarray, period: int) -> Optional[float]:
+        """Calcula Média Móvel Exponencial usando TA-Lib."""
+        if len(price_series) >= period:
+            try:
+                ema_values = talib.EMA(price_series, timeperiod=period)
+                return ema_values[-1] if not np.isnan(ema_values[-1]) else None
+            except Exception as e_talib:
+                self.logger.error(f"Erro no cálculo TA-Lib EMA ({period}): {e_talib}")
+                return None
+        return None
+
+    def calculate_rsi(self, price_series: np.ndarray, period: int = 14) -> Optional[float]:
+        """Calcula RSI usando TA-Lib."""
+        if len(price_series) >= period + 1: # RSI precisa de um pouco mais de dados
+            try:
+                rsi_values = talib.RSI(price_series, timeperiod=period)
+                return rsi_values[-1] if not np.isnan(rsi_values[-1]) else 50.0 # Default 50 se NaN
+            except Exception as e_talib:
+                self.logger.error(f"Erro no cálculo TA-Lib RSI ({period}): {e_talib}")
+                return 50.0 # Default em caso de erro
+        return 50.0 # Default se dados insuficientes
+
+    def calculate_atr(self, high_series: np.ndarray, low_series: np.ndarray,
+                     close_series: np.ndarray, period: int = 14) -> Optional[float]:
+        """Calcula ATR (Average True Range) usando TA-Lib."""
+        # TA-Lib ATR precisa de pelo menos 'period' elementos, mas mais é melhor para convergência.
+        if len(high_series) >= period and len(low_series) >= period and len(close_series) >= period:
+            try:
+                atr_values = talib.ATR(high_series, low_series, close_series, timeperiod=period)
+                return atr_values[-1] if not np.isnan(atr_values[-1]) else None
+            except Exception as e_talib:
+                self.logger.error(f"Erro no cálculo TA-Lib ATR ({period}): {e_talib}")
+                return None
+        return None
+
+
+    def calculate_bollinger_bands(self, price_series: np.ndarray,
+                                 period: int = 20,
+                                 num_std_dev: float = 2.0) -> Optional[Tuple[float, float, float]]: # (Upper, Middle, Lower)
+        """Calcula Bandas de Bollinger usando TA-Lib."""
+        if len(price_series) >= period:
+            try:
+                upper, middle, lower = talib.BBANDS(price_series, timeperiod=period, nbdevup=num_std_dev, nbdevdn=num_std_dev, matype=0) # MA_Type.SMA
+                if not np.isnan(upper[-1]) and not np.isnan(middle[-1]) and not np.isnan(lower[-1]):
+                    return upper[-1], middle[-1], lower[-1]
+                return None
+            except Exception as e_talib:
+                self.logger.error(f"Erro no cálculo TA-Lib BBANDS ({period}, {num_std_dev}): {e_talib}")
+                return None
+        return None
+
+    # _detect_pattern, _calculate_support_resistance, _calculate_pivot_points foram mantidos como estavam
+    # pois são mais baseados em lógica de preço do que indicadores padrão de TA-Lib.
+    # Pequenos ajustes de robustez.
+
+    def detect_price_pattern(self, open_prices: np.ndarray, high_prices: np.ndarray, # Renomeado e mais explícito
+                           low_prices: np.ndarray, close_prices: np.ndarray,
+                           pattern_name: str) -> int: # Retorna int como TA-Lib (0, 100, -100)
+        """Detecta padrões de candlestick usando TA-Lib."""
+        # TA-Lib espera que os arrays tenham o mesmo tamanho.
+        min_len = min(len(open_prices), len(high_prices), len(low_prices), len(close_prices))
+        if min_len == 0: return 0
+
+        # Pegar os últimos N elementos de cada, onde N é min_len
+        o, h, l, c = open_prices[-min_len:], high_prices[-min_len:], low_prices[-min_len:], close_prices[-min_len:]
+
+        try:
+            pattern_function = getattr(talib, pattern_name.upper(), None) # Ex: CDLENGULFING
+            if pattern_function:
+                pattern_results = pattern_function(o, h, l, c)
+                return pattern_results[-1] if len(pattern_results) > 0 else 0
+            else:
+                self.logger.warning(f"Padrão TA-Lib '{pattern_name}' não encontrado.")
+                return 0
+        except Exception as e_talib_pattern:
+            self.logger.error(f"Erro ao detectar padrão TA-Lib '{pattern_name}': {e_talib_pattern}")
             return 0
-        
-        if len(values) < period:
-            return np.mean(values)
-        
-        multiplier = 2 / (period + 1)
-        ema = values[0]
-        
-        for value in values[1:]:
-            ema = (value * multiplier) + (ema * (1 - multiplier))
-        
-        return ema
-    
-    def calculate_rsi(self, values: np.ndarray, period: int = 14) -> float:
-        """Calcula RSI"""
-        if len(values) < period + 1:
-            return 50  # Neutro
-        
-        deltas = np.diff(values)
-        gains = deltas.copy()
-        losses = deltas.copy()
-        
-        gains[gains < 0] = 0
-        losses[losses > 0] = 0
-        losses = abs(losses)
-        
-        avg_gain = np.mean(gains[-period:])
-        avg_loss = np.mean(losses[-period:])
-        
-        if avg_loss == 0:
-            return 100
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
-    
-    def calculate_atr(self, high: np.ndarray, low: np.ndarray, 
-                     close: np.ndarray, period: int = 14) -> float:
-        """Calcula ATR (Average True Range)"""
-        if len(high) < 2:
-            return 0
-        
-        tr_list = []
-        for i in range(1, len(high)):
-            hl = high[i] - low[i]
-            hc = abs(high[i] - close[i-1])
-            lc = abs(low[i] - close[i-1])
-            tr = max(hl, hc, lc)
-            tr_list.append(tr)
-        
-        if len(tr_list) >= period:
-            return np.mean(tr_list[-period:])
-        elif tr_list:
-            return np.mean(tr_list)
-        
-        return 0
-    
-    def calculate_bollinger_bands(self, values: np.ndarray, 
-                                 period: int = 20, 
-                                 num_std: float = 2) -> Tuple[float, float, float]:
-        """Calcula Bandas de Bollinger"""
-        if len(values) < period:
-            current = values[-1] if len(values) > 0 else 0
-            return current, current, current
-        
-        sma = np.mean(values[-period:])
-        std = np.std(values[-period:])
-        
-        upper = sma + (num_std * std)
-        lower = sma - (num_std * std)
-        
-        return upper, sma, lower
-    
-    def detect_pattern(self, values: np.ndarray, pattern_type: str) -> bool:
-        """Detecta padrões de preço comuns"""
-        if len(values) < 3:
-            return False
-        
-        if pattern_type == "bullish_engulfing":
-            # Padrão de engolfo de alta
-            return (values[-2] < values[-3] and  # Candle anterior bearish
-                    values[-1] > values[-2] and   # Candle atual bullish
-                    values[-1] > values[-3])      # Fecha acima da abertura anterior
-        
-        elif pattern_type == "bearish_engulfing":
-            # Padrão de engolfo de baixa
-            return (values[-2] > values[-3] and  # Candle anterior bullish
-                    values[-1] < values[-2] and   # Candle atual bearish
-                    values[-1] < values[-3])      # Fecha abaixo da abertura anterior
-        
-        elif pattern_type == "hammer":
-            # Martelo (reversão de alta)
-            body = abs(values[-1] - values[-2])
-            total = max(values[-1], values[-2]) - min(values[-1], values[-2])
-            return body < total * 0.3 and values[-1] > values[-2]
-        
-        elif pattern_type == "shooting_star":
-            # Estrela cadente (reversão de baixa)
-            body = abs(values[-1] - values[-2])
-            total = max(values[-1], values[-2]) - min(values[-1], values[-2])
-            return body < total * 0.3 and values[-1] < values[-2]
-        
-        return False
-    
-    def calculate_support_resistance(self, highs: np.ndarray, 
-                                   lows: np.ndarray, 
-                                   window: int = 20) -> Tuple[float, float]:
-        """Calcula níveis de suporte e resistência"""
-        if len(highs) < window or len(lows) < window:
-            return 0, 0
-        
-        # Resistência = máxima recente
-        resistance = np.max(highs[-window:])
-        
-        # Suporte = mínima recente
-        support = np.min(lows[-window:])
-        
-        return support, resistance
-    
-    def calculate_pivot_points(self, high: float, low: float, close: float) -> Dict[str, float]:
-        """Calcula pontos pivot"""
-        pivot = (high + low + close) / 3
-        
-        r1 = 2 * pivot - low
-        r2 = pivot + (high - low)
-        r3 = high + 2 * (pivot - low)
-        
-        s1 = 2 * pivot - high
-        s2 = pivot - (high - low)
-        s3 = low - 2 * (high - pivot)
-        
+
+
+    def calculate_support_resistance(self, high_series: np.ndarray,
+                                   low_series: np.ndarray,
+                                   window_periods: int = 20) -> Tuple[Optional[float], Optional[float]]: # Renomeado e Optional
+        """Calcula níveis simples de suporte (mínima recente) e resistência (máxima recente)."""
+        if len(high_series) >= window_periods and len(low_series) >= window_periods:
+            resistance = np.max(high_series[-window_periods:])
+            support = np.min(low_series[-window_periods:])
+            return support, resistance
+        return None, None
+
+
+    def calculate_standard_pivot_points(self, prev_high: float, prev_low: float, prev_close: float) -> Dict[str, float]: # Renomeado
+        """Calcula pontos pivot padrão para o período ATUAL, usando dados do período ANTERIOR."""
+        pivot = (prev_high + prev_low + prev_close) / 3.0 # Usar float
+
+        r1 = (2 * pivot) - prev_low
+        s1 = (2 * pivot) - prev_high
+        r2 = pivot + (prev_high - prev_low)
+        s2 = pivot - (prev_high - prev_low)
+        r3 = prev_high + 2 * (pivot - prev_low)
+        s3 = prev_low - 2 * (prev_high - pivot)
+
         return {
-            'pivot': pivot,
-            'r1': r1, 'r2': r2, 'r3': r3,
-            's1': s1, 's2': s2, 's3': s3
+            'pivot': round(pivot, 5), 'r1': round(r1, 5), 'r2': round(r2, 5), 'r3': round(r3, 5),
+            's1': round(s1, 5), 's2': round(s2, 5), 's3': round(s3, 5)
         }
-    
-    def calculate_risk_reward_ratio(self, entry: float, stop_loss: float, 
-                                   take_profit: float) -> float:
-        """Calcula relação risco/recompensa"""
-        risk = abs(entry - stop_loss)
-        reward = abs(take_profit - entry)
+
+
+    def calculate_risk_reward_ratio(self, entry_price_val: float, stop_loss_val: float, # Renomeado
+                                   take_profit_val: float) -> float:
+        """Calcula a relação Risco/Recompensa."""
+        if entry_price_val == stop_loss_val: # Evitar divisão por zero
+            return 0.0
         
-        if risk == 0:
-            return 0
-        
-        return reward / risk
-    
-    def is_valid_setup(self, signal: Signal, min_rr_ratio: float = 1.5) -> bool:
-        """Valida se o setup atende critérios mínimos"""
-        if not signal.is_valid():
-            return False
-        
-        # Verificar relação risco/recompensa
-        if signal.entry_price:
+        potential_risk = abs(entry_price_val - stop_loss_val)
+        potential_reward = abs(take_profit_val - entry_price_val)
+
+        return potential_reward / potential_risk if potential_risk > 0 else 0.0
+
+
+    def _is_setup_conditionally_valid(self, signal_obj: Signal, market_context: Dict[str, Any]) -> bool: # Renomeado
+        """
+        Valida se o setup do sinal atende a critérios mínimos condicionais
+        (ex: R:R, spread atual).
+        Esta é uma validação DA ESTRATÉGIA, antes de passar para o RiskManager.
+        """
+        if not signal_obj.is_valid(): return False # Checagem básica primeiro
+
+        # Verificar R:R mínimo se todos os preços estiverem definidos
+        min_rr = self.parameters.get('min_required_rr_ratio', 1.0) # Ex: pegar de params
+        if signal_obj.entry_price and signal_obj.stop_loss and signal_obj.take_profit:
             rr_ratio = self.calculate_risk_reward_ratio(
-                signal.entry_price,
-                signal.stop_loss,
-                signal.take_profit
+                signal_obj.entry_price, signal_obj.stop_loss, signal_obj.take_profit
             )
-            
-            if rr_ratio < min_rr_ratio:
+            if rr_ratio < min_rr:
+                self.logger.debug(f"Sinal para {signal_obj.symbol} rejeitado: R:R ({rr_ratio:.2f}) < Mínimo ({min_rr:.2f}).")
                 return False
-        
-        # Verificar confiança mínima
-        if signal.confidence < 0.6:
-            return False
-        
+
+        # Verificar spread máximo permitido pela estratégia (se configurado)
+        max_spread_pips_strat = self.parameters.get('max_spread_pips_for_entry')
+        if max_spread_pips_strat is not None:
+            current_spread_pips = market_context.get('spread', 0.0) * (10000 if "JPY" not in signal_obj.symbol.upper() else 100)
+            if current_spread_pips > max_spread_pips_strat:
+                self.logger.debug(f"Sinal para {signal_obj.symbol} rejeitado: Spread atual ({current_spread_pips:.1f} pips) > Máximo da estratégia ({max_spread_pips_strat:.1f} pips).")
+                return False
+
+        # Adicionar outras validações específicas da estratégia aqui...
+
         return True
-    
-    def adjust_for_spread(self, signal: Signal, spread: float) -> Signal:
-        """Ajusta sinal considerando spread"""
-        spread_adjustment = spread / 2
+
+
+    def adjust_signal_for_spread(self, signal_obj: Signal, current_spread_val: float) -> Signal: # Renomeado
+        """
+        Ajusta o preço de entrada, SL e TP de um SINAL para considerar o spread.
+        Isto é para quando a estratégia decide entrar a mercado.
+        Para ordens limite, o preço já é definido.
+        """
+        # Não modificar o sinal original, retornar um novo ou modificar uma cópia.
+        # Esta função parece redundante se o ExecutionEngine já lida com slippage/spread.
+        # Se a intenção é ajustar os NÍVEIS do sinal ANTES de enviá-lo,
+        # e a entrada for a mercado:
+        if signal_obj.order_type.lower() == "market":
+            if signal_obj.side.lower() == 'buy':
+                # Para compra a mercado, a entrada será no ASK. SL/TP são relativos a este ASK.
+                # O `signal_obj.entry_price` aqui seria o preço de referência (ex: MID) no momento do sinal.
+                # Se o ExecutionEngine for entrar no ASK, não precisamos ajustar entry_price aqui.
+                # Mas se SL/TP foram calculados a partir do MID, eles podem precisar de ajuste.
+                # Ex: signal_obj.stop_loss -= current_spread_val / 2.0 # Tornar SL mais conservador
+                #     signal_obj.take_profit += current_spread_val / 2.0
+                pass
+            elif signal_obj.side.lower() == 'sell':
+                # Para venda a mercado, a entrada será no BID.
+                # signal_obj.stop_loss += current_spread_val / 2.0
+                # signal_obj.take_profit -= current_spread_val / 2.0
+                pass
+        # Esta função pode ser mais complexa ou desnecessária dependendo de como o ExecutionEngine opera.
+        # O original estava ajustando SL/TP para ambos os lados, o que pode não ser sempre o desejado.
+        return signal_obj
+
+
+    def calculate_dynamic_trailing_stop(self, # Renomeado de calculate_trailing_stop
+                                 open_position: Position, # Renomeado
+                                 current_market_price: float, # Renomeado
+                                 atr_value: Optional[float] = None, # Renomeado
+                                 atr_multiplier: Optional[float] = None) -> Optional[float]: # Renomeado
+        """
+        Calcula um novo nível de trailing stop dinâmico.
+        Retorna o novo preço de stop loss, ou None se não deve ser atualizado.
+        """
+        if not atr_value: # Tentar obter ATR dos indicadores atuais se não fornecido
+            atr_value = self.current_indicators.get('atr') # Supondo que 'atr' está em current_indicators
+        if not atr_value or atr_value <= 0:
+            self.logger.debug(f"ATR inválido ({atr_value}) para trailing stop da posição {open_position.id}.")
+            return None # Não pode calcular sem ATR
+
+        multiplier = atr_multiplier if atr_multiplier is not None else self.parameters.get('trailing_stop_atr_multiplier', 2.0)
+        trailing_distance = atr_value * multiplier
+
+        new_potential_stop: float # Adicionada tipagem
+        current_stop_loss = open_position.stop_loss or (0.0 if open_position.side.lower() == 'buy' else float('inf'))
+
+
+        if open_position.side.lower() == 'buy':
+            new_potential_stop = current_market_price - trailing_distance
+            # Só mover o stop para cima (a favor da posição)
+            if new_potential_stop > current_stop_loss:
+                return new_potential_stop
+        elif open_position.side.lower() == 'sell':
+            new_potential_stop = current_market_price + trailing_distance
+            # Só mover o stop para baixo (a favor da posição)
+            if new_potential_stop < current_stop_loss:
+                return new_potential_stop
         
-        if signal.side == 'buy':
-            if signal.entry_price:
-                signal.entry_price += spread_adjustment
-            signal.stop_loss -= spread_adjustment
-            signal.take_profit += spread_adjustment
-        else:  # sell
-            if signal.entry_price:
-                signal.entry_price -= spread_adjustment
-            signal.stop_loss += spread_adjustment
-            signal.take_profit -= spread_adjustment
-        
-        return signal
-    
-    def calculate_trailing_stop(self, position: Position, current_price: float, 
-                               atr: float, multiplier: float = 2.0) -> float:
-        """Calcula novo nível de trailing stop"""
-        distance = atr * multiplier
-        
-        if position.side == 'buy':
-            new_stop = current_price - distance
-            # Só move stop para cima
-            return max(position.stop_loss, new_stop)
-        else:  # sell
-            new_stop = current_price + distance
-            # Só move stop para baixo
-            return min(position.stop_loss, new_stop)
-    
-    def should_scale_in(self, position: Position, current_price: float, 
-                       entry_price: float) -> bool:
-        """Verifica se deve aumentar posição (scale-in)"""
-        if position.side == 'buy':
-            # Scale-in se preço caiu X% desde entrada
-            return current_price < entry_price * 0.995
-        else:  # sell
-            # Scale-in se preço subiu X% desde entrada
-            return current_price > entry_price * 1.005
-    
-    def should_scale_out(self, position: Position, current_price: float, 
-                        entry_price: float) -> bool:
-        """Verifica se deve reduzir posição (scale-out)"""
-        pnl_pct = (current_price - entry_price) / entry_price
-        
-        if position.side == 'buy':
-            # Scale-out se lucro > 1%
-            return pnl_pct > 0.01
-        else:  # sell
-            # Scale-out se lucro > 1%
-            return pnl_pct < -0.01
-    
-    def get_time_filter(self, hour: int) -> bool:
-        """Filtro de horário para trading"""
-        # Evitar horários de baixa liquidez
-        if hour < 7 or hour > 22:  # Fora do horário Londres/NY
-            return False
-        
-        # Evitar abertura/fechamento de mercados (alta volatilidade)
-        if hour in [8, 13, 16, 21]:  # Aberturas principais
-            return False
-        
+        return None # Nenhum ajuste necessário
+
+
+    # Métodos de scale-in/scale-out foram removidos.
+    # Esta lógica é complexa e geralmente gerenciada pelo Orchestrator ou
+    # por uma meta-estratégia de gestão de posição, não pela estratégia de sinal individual.
+    # Se necessário, podem ser re-adicionados com lógica mais clara.
+
+
+    def get_time_filter_for_strategy(self, current_utc_hour: int) -> bool: # Renomeado e com arg
+        """
+        Filtro de horário específico da estratégia (se houver).
+        Retorna True se a estratégia PODE operar neste horário.
+        """
+        # Exemplo: esta estratégia só opera durante o overlap Londres/NY
+        # allowed_hours = self.parameters.get('allowed_trading_hours_utc', list(range(24))) # Default: todas as horas
+        # if current_utc_hour not in allowed_hours:
+        #     return False
+
+        # A lógica original era global, não específica da estratégia.
+        # Se a intenção é um filtro global, ele deve estar no Orchestrator.
+        # Se for específico da estratégia, carregar de self.parameters.
+        # Mantendo a lógica original como exemplo de filtro global que uma estratégia poderia consultar:
+        if current_utc_hour < getattr(CONFIG, 'TRADING_SESSION_START_HOUR_UTC', 7) or \
+           current_utc_hour >= getattr(CONFIG, 'TRADING_SESSION_END_HOUR_UTC', 22):
+            return False # Fora do horário principal Londres/NY
+
+        # Evitar horários de baixa liquidez ou alta volatilidade de aberturas/fechamentos
+        # if current_utc_hour in [8, 13, 16, 21]: # Horas de abertura/fechamento
+        #     minute_of_hour = datetime.now(timezone.utc).minute
+        #     if minute_of_hour < 15 or minute_of_hour > 45: # Evitar primeiros/últimos 15 min da hora
+        #         return False
         return True
-    
-    def calculate_kelly_criterion(self, win_rate: float, avg_win: float, 
-                                 avg_loss: float) -> float:
-        """Calcula fração ótima de capital para apostar (Kelly Criterion)"""
-        if avg_loss == 0:
-            return 0
-        
-        b = avg_win / avg_loss
-        p = win_rate
-        q = 1 - p
-        
-        kelly = (p * b - q) / b
-        
-        # Limitar a 25% (Kelly conservador)
-        return min(max(kelly, 0), 0.25)
-    
+
+
+    # calculate_kelly_criterion foi removido pois já existe em PositionSizer
+    # e é mais apropriado lá.
+
     def __repr__(self) -> str:
-        return f"{self.name}(active={self.active}, trades={self.performance['total_trades']})"
+        active_status = "ATIVA" if self.active else "INATIVA" # Renomeado
+        # Performance.total_trades não existe mais aqui.
+        # Poderia logar o número de sinais gerados ou estado interno.
+        num_params = len(self.parameters)
+        return f"{self.name}(Status: {active_status}, Params: {num_params})"

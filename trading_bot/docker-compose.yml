@@ -7,6 +7,10 @@ services:
     container_name: eurusd_trading_bot
     restart: unless-stopped
     environment:
+      # NOTA: Para produção, NÃO coloque segredos diretamente aqui.
+      # Use Docker secrets, HashiCorp Vault, AWS Secrets Manager, ou injete via CI/CD.
+      # Os valores abaixo são exemplos e devem ser substituídos por referências a segredos
+      # ou carregados de um arquivo .env NÃO commitado (se docker-compose suportar .env file diretamente para environment)
       - TRADING_MODE=live
       - TRADING_LOGIN=28502146
       - TRADING_PASSWORD=FmpQ32rW
@@ -15,16 +19,28 @@ services:
       - TRADING_WEB_API_TOKEN_SECRET=d8fJKY4JCqZCdFP7ttTmtq3hbN9ZdwytXxa4fEWz4r3ZNtY7Mz4aXBzXf8G8YdEg
       - REDIS_HOST=redis
       - TZ=UTC
+      # Caminhos dentro do container (correspondem ao TradingConfig ajustado)
+      - APP_BASE_DIR=/app
+      - TRADING_PARQUET_PATH=/app/data/ticks
+      - TRADING_SQLITE_PATH=/app/data/strategy_meta.db
+      - TRADING_MODELS_PATH=/app/models
+      - TRADING_LOG_PATH=/app/logs
+      - TRADING_DATA_DIR=/app/data
+      - TRADING_LOG_DIR=/app/logs
+
     volumes:
+      # Mapeia diretórios locais para dentro do container para persistência
       - ./data:/app/data
       - ./logs:/app/logs
       - ./models:/app/models
-      - ./config:/app/config
+      # Opcional: Mapear config se você quiser alterá-la sem reconstruir a imagem,
+      # mas é geralmente melhor construir configurações na imagem ou usar vars de ambiente.
+      # - ./config:/app/config
     ports:
       - "9090:9090"  # Prometheus metrics
     depends_on:
       - redis
-      - prometheus
+      # - prometheus # Descomente se Prometheus estiver sendo usado ativamente e for uma dependência de inicialização
     networks:
       - trading-network
     deploy:
@@ -60,7 +76,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
     ports:
-      - "9091:9090"
+      - "9091:9090" # Porta externa alterada para evitar conflito se rodar Prometheus localmente também
     networks:
       - trading-network
 
@@ -69,7 +85,7 @@ services:
     container_name: trading_grafana
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin} # Use variável de ambiente
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
@@ -89,9 +105,10 @@ services:
     restart: unless-stopped
     environment:
       - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-yoursecuretoken} # Defina um token
     volumes:
       - ./notebooks:/home/jovyan/work
-      - ./data:/home/jovyan/data:ro
+      - ./data:/home/jovyan/data:ro # Monta dados como read-only
     ports:
       - "8888:8888"
     networks:
