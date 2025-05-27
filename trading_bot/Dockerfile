@@ -1,52 +1,50 @@
 # Dockerfile
 FROM python:3.12-slim
 
-# Instalar dependÃªncias do sistema
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    make \
-    wget \
-    curl \
-    libssl-dev \
-    libffi-dev \
-    python3-dev \
-    build-essential \
-    libta-lib0-dev \
-    libhdf5-dev \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Instalar TA-Lib
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-    tar -xzf ta-lib-0.4.0-src.tar.gz && \
-    cd ta-lib/ && \
-    ./configure --prefix=/usr && \
-    make && \
-    make install && \
-    cd .. && \
-    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
-
-# Definir diretÃ³rio de trabalho
 WORKDIR /app
 
-# Copiar arquivos de requirements
-COPY requirements.txt .
+# 1. Instalar dependências de sistema necessárias para compilação e outras bibliotecas
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        wget \
+        build-essential \
+        libssl-dev \
+        libffi-dev \
+        python3-dev \
+        gcc \
+        g++ \
+        make \
+        curl \
+        libhdf5-dev \
+        libxml2-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Instalar dependÃªncias Python
+# 2. Baixar e compilar TA-Lib v0.6.4 a partir do código-fonte
+RUN wget https://github.com/ta-lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz \
+    && tar -xzf ta-lib-0.6.4-src.tar.gz \
+    && cd ta-lib-0.6.4/ \
+    && ./configure --prefix=/usr \
+    && make \
+    && make install \
+    && cd .. \
+    && rm -rf ta-lib-0.6.4 ta-lib-0.6.4-src.tar.gz
+
+# 3. Copiar o arquivo de requirements.txt
+COPY ./requirements.txt /app/requirements.txt
+
+# 4. Instalar as dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar cÃ³digo da aplicaÃ§Ã£o
-COPY . .
+# 5. Copiar todo o código do projeto para /app/ no container
+COPY . /app/
 
-# Criar diretÃ³rios necessÃ¡rios
-RUN mkdir -p /app/data/ticks /app/logs /app/models
+# 6. Definir a variável de ambiente para o diretório base da aplicação
+ENV APP_BASE_DIR=/app
 
-# VariÃ¡veis de ambiente
-ENV PYTHONUNBUFFERED=1
-ENV TZ=UTC
-
-# Expor porta para mÃ©tricas Prometheus
-EXPOSE 9090
-
-# Comando padrÃ£o
-CMD ["python", "main.py", "--mode", "live"]
+# 7. Comando padrão para executar quando o container iniciar
+CMD ["python", "main.py"]

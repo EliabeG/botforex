@@ -1,0 +1,21 @@
+# ~/trading_bot/monitoring/prometheus.yml
+global:
+  scrape_interval: 15s # Com que frequência buscar métricas.
+  evaluation_interval: 15s # Com que frequência avaliar regras.
+
+# Regras de alerta (opcional, pode ser um arquivo separado)
+# rule_files:
+#   - "alert.rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus' # Job para o próprio Prometheus (opcional)
+    static_configs:
+      - targets: ['localhost:9090'] # O Prometheus expõe suas próprias métricas
+
+  - job_name: 'trading-bot'
+    # metrics_path defaults para '/metrics'
+    static_configs:
+      # 'trading-bot' é o nome do serviço do seu bot no docker-compose.yml.
+      # Docker Compose provê resolução de DNS entre serviços na mesma rede.
+      # A porta 9090 é a que MetricsCollector expõe.
+      - targets: ['trading-bot:9090']
