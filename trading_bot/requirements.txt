@@ -29,7 +29,7 @@ statsmodels>=0.14.1
 # ==============================================================================
 # NOTA: TA-Lib requer a biblioteca C TA-Lib instalada no sistema.
 # No Ubuntu/Debian: sudo apt-get install libta-lib-dev
-TA-Lib>=0.4.28
+TA-Lib>=0.6.3
 pandas-ta>=0.3.14b0
 empyrical-reloaded>=0.5.7
 pyfolio-reloaded

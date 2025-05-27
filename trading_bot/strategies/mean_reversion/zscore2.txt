@@ -1,0 +1,363 @@
+# strategies/mean_reversion/zscore_vwap.py
+import numpy as np
+from typing import Dict, Optional, Any, List
+from datetime import datetime, timedelta
+from collections import deque
+
+from strategies.base_strategy import BaseStrategy, Signal, Position, ExitSignal
+from core.market_regime import MarketRegime
+from utils.logger import setup_logger
+
+logger = setup_logger("zscore_vwap")
+
+class ZScoreVWAPStrategy(BaseStrategy):
+    """
+    Estratégia de mean reversion usando Z-Score do VWAP
+    
+    Conceito:
+    - VWAP como preço justo intraday
+    - Z-Score mede desvios em desvios padrão
+    - Entradas em extremos, saídas na média
+    """
+    
+    def __init__(self):
+        super().__init__("ZScoreVWAP")
+        self.suitable_regimes = [MarketRegime.RANGE, MarketRegime.LOW_VOLATILITY]
+        self.min_time_between_signals = 120
+        
+        # Buffers para cálculos
+        self.vwap_buffer = deque(maxlen=1000)
+        self.volume_buffer = deque(maxlen=1000)
+        self.session_start = None
+        
+    def get_default_parameters(self) -> Dict[str, Any]:
+        return {
+            'zscore_period': 100,
+            'zscore_entry_threshold': 2.0,
+            'zscore_extreme_threshold': 3.0,
+            'zscore_exit_threshold': 0.5,
+            'min_volume_ratio': 0.8,
+            'use_volume_confirmation': True,
+            'use_bands': True,
+            'band_multiplier': 2.5,
+            'atr_multiplier_sl': 1.5,
+            'atr_multiplier_tp': 2.0,
+            'reset_at_session': True,
+            'london_session_start': 8,
+            'ny_session_start': 13
+        }
+    
+    def _reset_session(self):
+        """Reset buffers para nova sessão"""
+        self.vwap_buffer.clear()
+        self.volume_buffer.clear()
+        self.session_start = datetime.now()
+    
+    def _check_session_change(self, current_time: datetime) -> bool:
+        """Verifica se mudou a sessão de trading"""
+        hour = current_time.hour
+        
+        # Londres
+        if hour == self.parameters['london_session_start'] and current_time.minute < 5:
+            return True
+        
+        # Nova York
+        if hour == self.parameters['ny_session_start'] and current_time.minute < 5:
+            return True
+        
+        return False
+    
+    async def calculate_indicators(self, market_context: Dict) -> Dict[str, Any]:
+        """Calcula VWAP e Z-Score"""
+        try:
+            ticks = market_context.get('recent_ticks', [])
+            if len(ticks) < self.parameters['zscore_period']:
+                return {}
+            
+            current_time = datetime.now()
+            
+            # Verificar mudança de sessão
+            if self.parameters['reset_at_session'] and self._check_session_change(current_time):
+                self._reset_session()
+            
+            # Calcular VWAP
+            vwap_data = self._calculate_vwap(ticks)
+            if not vwap_data:
+                return {}
+            
+            vwap = vwap_data['vwap']
+            vwap_std = vwap_data['std']
+            cumulative_volume = vwap_data['cumulative_volume']
+            
+            # Preço atual
+            current_price = ticks[-1].mid
+            
+            # Z-Score
+            zscore = 0
+            if vwap_std > 0:
+                zscore = (current_price - vwap) / vwap_std
+            
+            # Bandas de VWAP
+            upper_band = vwap + (vwap_std * self.parameters['band_multiplier'])
+            lower_band = vwap - (vwap_std * self.parameters['band_multiplier'])
+            
+            # Volume analysis
+            recent_volume = sum([(t.bid_volume + t.ask_volume) / 2 for t in ticks[-20:]])
+            avg_volume = cumulative_volume / len(self.vwap_buffer) if self.vwap_buffer else 1
+            volume_ratio = recent_volume / (avg_volume * 20) if avg_volume > 0 else 1
+            
+            # ATR
+            highs = np.array([t.ask for t in ticks])
+            lows = np.array([t.bid for t in ticks])
+            closes = np.array([t.mid for t in ticks])
+            atr = self.calculate_atr(highs, lows, closes, period=14)
+            
+            # Distância percentual do VWAP
+            vwap_distance_pct = ((current_price - vwap) / vwap) * 100 if vwap > 0 else 0
+            
+            indicators = {
+                'vwap': vwap,
+                'vwap_std': vwap_std,
+                'zscore': zscore,
+                'upper_band': upper_band,
+                'lower_band': lower_band,
+                'current_price': current_price,
+                'volume_ratio': volume_ratio,
+                'cumulative_volume': cumulative_volume,
+                'vwap_distance_pct': vwap_distance_pct,
+                'atr': atr,
+                'session_duration': (current_time - self.session_start).seconds if self.session_start else 0,
+                'spread': market_context.get('spread', 0)
+            }
+            
+            return indicators
+            
+        except Exception as e:
+            logger.error(f"Erro ao calcular VWAP/Z-Score: {e}")
+            return {}
+    
+    def _calculate_vwap(self, ticks: List) -> Optional[Dict]:
+        """Calcula VWAP com desvio padrão"""
+        try:
+            # Acumular dados na sessão
+            for tick in ticks[-50:]:  # Processar últimos 50 ticks
+                price = tick.mid
+                volume = (tick.bid_volume + tick.ask_volume) / 2
+                
+                self.vwap_buffer.append(price * volume)
+                self.volume_buffer.append(volume)
+            
+            if not self.volume_buffer or sum(self.volume_buffer) == 0:
+                return None
+            
+            # VWAP = Σ(Price × Volume) / Σ(Volume)
+            cumulative_pv = sum(self.vwap_buffer)
+            cumulative_volume = sum(self.volume_buffer)
+            
+            vwap = cumulative_pv / cumulative_volume if cumulative_volume > 0 else 0
+            
+            # Calcular desvio padrão ponderado por volume
+            prices = []
+            volumes = []
+            
+            # Reconstruir preços dos últimos ticks
+            for i in range(min(len(self.vwap_buffer), len(self.volume_buffer))):
+                if self.volume_buffer[i] > 0:
+                    price = self.vwap_buffer[i] / self.volume_buffer[i]
+                    prices.append(price)
+                    volumes.append(self.volume_buffer[i])
+            
+            if not prices:
+                return None
+            
+            # Desvio padrão ponderado
+            weighted_mean = vwap
+            variance = 0
+            total_weight = sum(volumes)
+            
+            for price, volume in zip(prices, volumes):
+                variance += volume * (price - weighted_mean) ** 2
+            
+            std = np.sqrt(variance / total_weight) if total_weight > 0 else 0
+            
+            return {
+                'vwap': vwap,
+                'std': std,
+                'cumulative_volume': cumulative_volume
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro no cálculo VWAP: {e}")
+            return None
+    
+    async def generate_signal(self, market_context: Dict) -> Optional[Signal]:
+        """Gera sinais de mean reversion"""
+        indicators = self.indicators
+        
+        if not indicators or 'zscore' not in indicators:
+            return None
+        
+        # Verificar volume mínimo
+        if self.parameters['use_volume_confirmation']:
+            if indicators['volume_ratio'] < self.parameters['min_volume_ratio']:
+                return None
+        
+        # Verificar tempo mínimo de sessão (evitar início)
+        if indicators['session_duration'] < 600:  # 10 minutos
+            return None
+        
+        signal_type = None
+        signal_strength = abs(indicators['zscore'])
+        
+        # Sinais de reversão
+        if indicators['zscore'] <= -self.parameters['zscore_entry_threshold']:
+            # Oversold - compra
+            signal_type = 'buy'
+            
+            # Confirmar com bandas
+            if self.parameters['use_bands']:
+                if indicators['current_price'] > indicators['lower_band']:
+                    signal_strength *= 0.8  # Reduzir força se não tocou banda
+        
+        elif indicators['zscore'] >= self.parameters['zscore_entry_threshold']:
+            # Overbought - venda
+            signal_type = 'sell'
+            
+            # Confirmar com bandas
+            if self.parameters['use_bands']:
+                if indicators['current_price'] < indicators['upper_band']:
+                    signal_strength *= 0.8
+        
+        # Verificar extremos para entradas mais agressivas
+        if abs(indicators['zscore']) >= self.parameters['zscore_extreme_threshold']:
+            signal_strength *= 1.2
+        
+        if signal_type and signal_strength >= self.parameters['zscore_entry_threshold']:
+            return self._create_zscore_signal(signal_type, indicators, signal_strength, market_context)
+        
+        return None
+    
+    def _create_zscore_signal(self, signal_type: str, indicators: Dict,
+                             signal_strength: float, market_context: Dict) -> Signal:
+        """Cria sinal com alvos baseados em VWAP"""
+        price = indicators['current_price']
+        atr = indicators['atr']
+        vwap = indicators['vwap']
+        
+        # Stop loss além das bandas
+        if signal_type == 'buy':
+            stop_loss = min(
+                indicators['lower_band'] - (atr * 0.5),
+                price - (atr * self.parameters['atr_multiplier_sl'])
+            )
+            # Take profit parcial no VWAP, total na banda oposta
+            take_profit = vwap + (atr * 0.5)  # Alvo conservador
+            
+        else:  # sell
+            stop_loss = max(
+                indicators['upper_band'] + (atr * 0.5),
+                price + (atr * self.parameters['atr_multiplier_sl'])
+            )
+            take_profit = vwap - (atr * 0.5)
+        
+        # Confiança baseada na força do Z-Score e volume
+        confidence = self._calculate_zscore_confidence(indicators, signal_strength)
+        
+        signal = Signal(
+            timestamp=datetime.now(),
+            strategy_name=self.name,
+            side=signal_type,
+            confidence=confidence,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            entry_price=price,
+            reason=f"Z-Score {signal_type.upper()} - Z: {indicators['zscore']:.2f}",
+            metadata={
+                'zscore': indicators['zscore'],
+                'vwap': vwap,
+                'vwap_distance_pct': indicators['vwap_distance_pct'],
+                'volume_ratio': indicators['volume_ratio'],
+                'signal_strength': signal_strength
+            }
+        )
+        
+        return self.adjust_for_spread(signal, indicators['spread'])
+    
+    def _calculate_zscore_confidence(self, indicators: Dict, signal_strength: float) -> float:
+        """Calcula confiança baseada em múltiplos fatores"""
+        confidence = 0.6
+        
+        # Z-Score extremo
+        if abs(indicators['zscore']) > 3.0:
+            confidence += 0.15
+        elif abs(indicators['zscore']) > 2.5:
+            confidence += 0.1
+        
+        # Volume confirmando
+        if indicators['volume_ratio'] > 1.2:
+            confidence += 0.1
+        elif indicators['volume_ratio'] > 1.0:
+            confidence += 0.05
+        
+        # Distância do VWAP
+        if abs(indicators['vwap_distance_pct']) > 0.15:  # 0.15%
+            confidence += 0.1
+        
+        # Tempo de sessão (mais confiável após 1h)
+        if indicators['session_duration'] > 3600:
+            confidence += 0.05
+        
+        return min(confidence, 0.95)
+    
+    async def calculate_exit_conditions(self, position: Position,
+                                       current_price: float) -> Optional[ExitSignal]:
+        """Condições de saída para mean reversion"""
+        indicators = self.indicators
+        
+        if not indicators:
+            return None
+        
+        # Saída principal: retorno ao VWAP
+        vwap_distance = abs(current_price - indicators['vwap'])
+        
+        if position.side == 'buy':
+            # Saída se Z-Score normalizar ou inverter
+            if indicators['zscore'] >= -self.parameters['zscore_exit_threshold']:
+                return ExitSignal(
+                    position_id=position.id,
+                    reason=f"Z-Score normalized: {indicators['zscore']:.2f}",
+                    exit_price=current_price
+                )
+            
+            # Saída se atingir extremo oposto
+            if indicators['zscore'] >= self.parameters['zscore_extreme_threshold']:
+                return ExitSignal(
+                    position_id=position.id,
+                    reason="Z-Score extreme reversal",
+                    exit_price=current_price
+                )
+        
+        else:  # sell
+            if indicators['zscore'] <= self.parameters['zscore_exit_threshold']:
+                return ExitSignal(
+                    position_id=position.id,
+                    reason=f"Z-Score normalized: {indicators['zscore']:.2f}",
+                    exit_price=current_price
+                )
+            
+            if indicators['zscore'] <= -self.parameters['zscore_extreme_threshold']:
+                return ExitSignal(
+                    position_id=position.id,
+                    reason="Z-Score extreme reversal",
+                    exit_price=current_price
+                )
+        
+        # Gestão de stops parciais
+        if position.unrealized_pnl_pct > 0.1:  # 0.1% de lucro
+            # Mover stop para breakeven
+            if position.side == 'buy' and position.stop_loss < position.entry_price:
+                position.stop_loss = position.entry_price + 0.00001
+            elif position.side == 'sell' and position.stop_loss > position.entry_price:
+                position.stop_loss = position.entry_price - 0.00001
+        
+        return None
