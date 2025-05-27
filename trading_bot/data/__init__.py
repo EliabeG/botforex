@@ -1,10 +1,10 @@
 # data/__init__.py
-"""Módulo de gestão de dados"""
+"""Modulo de gestao de dados""" # CORRIGIDO: Removido caracteres invalidos
 from .tick_storage import TickStorage
 from .redis_cache import RedisCache
 from .market_data import MarketDataProcessor
-# from .data_provider import DataProvider # Exemplo se você tivesse um DataProvider unificado
-# from .models import Tick, OHLCBar # Exemplo se você tivesse modelos de dados aqui
+# from .data_provider import DataProvider 
+# from .models import Tick, OHLCBar 
 
 __all__ = [
     'TickStorage',

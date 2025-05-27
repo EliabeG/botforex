@@ -1,259 +1,182 @@
 # config/settings.py
+"""Modulo de configuracoes globais e especificas do bot, usando Pydantic."""
 import os
-from dataclasses import dataclass
-from typing import Dict, Any
-import json
-from pathlib import Path # Adicionado para melhor manipulação de caminhos
+from pathlib import Path
+from typing import List, Dict, Optional, Any, Literal
 
-# Define um diretório base para o projeto, se necessário, ou use caminhos absolutos
-# Por exemplo, se o bot está em /app no container Docker:
-APP_BASE_DIR = Path(os.getenv("APP_BASE_DIR", "/app"))
+# Tentar importar load_dotenv, se falhar, continuar
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None # type: ignore
 
-@dataclass
-class TradingConfig:
-    """Configurações principais do bot de trading"""
+# Usar pydantic.Field para Pydantic v2
+# Para Pydantic v1, os campos nao precisariam de Field(...) para defaults simples.
+from pydantic import BaseModel, Field, HttpUrl, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-    # Credenciais TickTrader (CARREGAR DE VARIÁVEIS DE AMBIENTE)
-    ACCOUNT_TYPE: str = os.getenv("TRADING_ACCOUNT_TYPE", "Gross")
-    PLATFORM: str = os.getenv("TRADING_PLATFORM", "TickTrader")
-    LOGIN: str = os.getenv("TRADING_LOGIN", "SUA_LOGIN_AQUI") # Placeholder
-    PASSWORD: str = os.getenv("TRADING_PASSWORD", "SUA_SENHA_AQUI") # Placeholder
-    SERVER: str = os.getenv("TRADING_SERVER", "ttdemomarginal.fxopen.net")
-    LEVERAGE: int = int(os.getenv("TRADING_LEVERAGE", "500"))
-    CURRENCY: str = os.getenv("TRADING_CURRENCY", "USD")
+# Determinar o caminho base do projeto e o arquivo .env
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+env_file_path = PROJECT_ROOT / ".env"
 
-    # Web API Tokens (CARREGAR DE VARIÁVEIS DE AMBIENTE)
-    WEB_API_TOKEN_ID: str = os.getenv("TRADING_WEB_API_TOKEN_ID", "SEU_TOKEN_ID_AQUI") # Placeholder
-    WEB_API_TOKEN_KEY: str = os.getenv("TRADING_WEB_API_TOKEN_KEY", "SEU_TOKEN_KEY_AQUI") # Placeholder
-    WEB_API_TOKEN_SECRET: str = os.getenv("TRADING_WEB_API_TOKEN_SECRET", "SEU_TOKEN_SECRET_AQUI") # Placeholder
-    WEB_API_AUTH_TYPE: str = os.getenv("TRADING_WEB_API_AUTH_TYPE", "HMAC")
-    WEB_API_RIGHTS: str = os.getenv("TRADING_WEB_API_RIGHTS", "Full")
-
-    # WebSocket URLs
-    WS_FEED_URL: str = os.getenv("TRADING_WS_FEED_URL", "wss://marginalttdemowebapi.fxopen.net/feed")
-    WS_TRADE_URL: str = os.getenv("TRADING_WS_TRADE_URL", "wss://marginalttdemowebapi.fxopen.net/trade")
-    REST_API_URL: str = os.getenv("TRADING_REST_API_URL", "https://marginalttdemowebapi.fxopen.net")
-
-    # Trading Parameters
-    SYMBOL: str = os.getenv("TRADING_SYMBOL", "EURUSD")
-    TARGET_DAILY_PROFIT: float = float(os.getenv("TRADING_TARGET_DAILY_PROFIT", "0.05"))  # 5% da banca
-    MAX_DRAWDOWN: float = float(os.getenv("TRADING_MAX_DRAWDOWN", "0.20"))  # 20% máximo
-    MAX_RISK_PER_TRADE: float = float(os.getenv("TRADING_MAX_RISK_PER_TRADE", "0.01"))  # 1% por trade
-    DAILY_LOSS_LIMIT: float = float(os.getenv("TRADING_DAILY_LOSS_LIMIT", "0.03"))  # 3% limite diário
-
-    # Execution Parameters
-    MAX_SIMULTANEOUS_ORDERS: int = int(os.getenv("TRADING_MAX_SIMULTANEOUS_ORDERS", "3"))
-    MAX_SLIPPAGE_PIPS: float = float(os.getenv("TRADING_MAX_SLIPPAGE_PIPS", "0.2"))
-    MAX_SPREAD_PIPS: float = float(os.getenv("TRADING_MAX_SPREAD_PIPS", "1.0"))
-    ORDER_TIMEOUT_MS: int = int(os.getenv("TRADING_ORDER_TIMEOUT_MS", "10000"))  # 10 segundos
-
-    # Data Settings
-    TICK_HISTORY_YEARS: int = int(os.getenv("TRADING_TICK_HISTORY_YEARS", "3"))
-    REDIS_TTL_HOURS: int = int(os.getenv("TRADING_REDIS_TTL_HOURS", "24"))
-    DOM_LEVELS: int = int(os.getenv("TRADING_DOM_LEVELS", "200"))
-    DOM_SNAPSHOT_MS: int = int(os.getenv("TRADING_DOM_SNAPSHOT_MS", "100"))
-
-    # Optimization Settings
-    WALK_FORWARD_TRAIN_MONTHS: int = int(os.getenv("TRADING_WALK_FORWARD_TRAIN_MONTHS", "6"))
-    WALK_FORWARD_TEST_MONTHS: int = int(os.getenv("TRADING_WALK_FORWARD_TEST_MONTHS", "1"))
-    OPTIMIZATION_SCHEDULE: str = os.getenv("TRADING_OPTIMIZATION_SCHEDULE", "0 21 * * 0")  # Domingo 21:00 UTC
-
-    # Regime Detection
-    REGIME_UPDATE_MS: int = int(os.getenv("TRADING_REGIME_UPDATE_MS", "500"))
-    REGIME_CONFIDENCE_THRESHOLD: float = float(os.getenv("TRADING_REGIME_CONFIDENCE_THRESHOLD", "0.60"))
-
-    # Strategy Selection
-    MAX_ACTIVE_STRATEGIES: int = int(os.getenv("TRADING_MAX_ACTIVE_STRATEGIES", "3"))
-    SCORE_UPDATE_TRADES: int = int(os.getenv("TRADING_SCORE_UPDATE_TRADES", "50"))
-    SCORE_UPDATE_MINUTES: int = int(os.getenv("TRADING_SCORE_UPDATE_MINUTES", "30"))
-
-    # Monitoring
-    NTP_SYNC_MINUTES: int = int(os.getenv("TRADING_NTP_SYNC_MINUTES", "5"))
-    METRICS_PORT: int = int(os.getenv("TRADING_METRICS_PORT", "9090"))
-    ALERT_LATENCY_MS: int = int(os.getenv("TRADING_ALERT_LATENCY_MS", "200")) # Aumentado para exemplo, ajuste conforme necessário
-    ALERT_DD_WEEKLY: float = float(os.getenv("TRADING_ALERT_DD_WEEKLY", "0.10"))
-
-    # Infrastructure
-    VPS_LOCATION: str = os.getenv("TRADING_VPS_LOCATION", "LD4")  # London Equinix
-    TARGET_PING_MS: int = int(os.getenv("TRADING_TARGET_PING_MS", "50")) # Aumentado para exemplo
-
-    # Database (Caminhos ajustados para Docker)
-    PARQUET_PATH: str = os.getenv("TRADING_PARQUET_PATH", str(APP_BASE_DIR / "data" / "ticks"))
-    SQLITE_PATH: str = os.getenv("TRADING_SQLITE_PATH", str(APP_BASE_DIR / "data" / "strategy_meta.db"))
-    MODELS_PATH: str = os.getenv("TRADING_MODELS_PATH", str(APP_BASE_DIR / "models")) # Adicionado para modelos
-    REDIS_HOST: str = os.getenv("REDIS_HOST", "redis") # Nome do serviço no docker-compose
-    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
-    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
-
-    # Logging (Caminho ajustado para Docker)
-    LOG_LEVEL: str = os.getenv("TRADING_LOG_LEVEL", "INFO")
-    LOG_PATH: str = os.getenv("TRADING_LOG_PATH", str(APP_BASE_DIR / "logs"))
-    LOG_ROTATION: str = os.getenv("TRADING_LOG_ROTATION", "1 day")
-    LOG_RETENTION: str = os.getenv("TRADING_LOG_RETENTION", "30 days")
-
-    # Adicione um diretório base para dados se não estiver usando APP_BASE_DIR para tudo
-    DATA_DIR: str = os.getenv("TRADING_DATA_DIR", str(APP_BASE_DIR / "data"))
-    LOG_DIR: str = os.getenv("TRADING_LOG_DIR", str(APP_BASE_DIR / "logs"))
+if load_dotenv:
+    if not env_file_path.exists():
+        print(f"AVISO: Arquivo .env nao encontrado em {env_file_path}. Usando valores padrao ou variaveis de ambiente.")
+    else:
+        load_dotenv(dotenv_path=env_file_path)
+        print(f"Carregado .env de {env_file_path}") # Este print e importante para debug
+else:
+    print("AVISO: python-dotenv nao instalado, nao foi possivel carregar .env. Usando valores padrao ou variaveis de ambiente.")
 
 
-@dataclass
-class RegimeThresholds:
-    """Limiares para detecção de regime de mercado"""
+# ==============================================================================
+# MODELOS DE CONFIGURACAO BASE (Pydantic)
+# ==============================================================================
+class TickTraderCredentials(BaseSettings):
+    TT_WEB_API_TOKEN_ID: Optional[SecretStr] = Field(default=None, description="ID do Token da Web API TickTrader (para REST).")
+    TT_WEB_API_TOKEN_KEY: Optional[SecretStr] = Field(default=None, description="Chave do Token da Web API TickTrader (para REST).")
+    TT_WEB_API_TOKEN_SECRET: Optional[SecretStr] = Field(default=None, description="Segredo do Token da Web API TickTrader (para REST).")
+    
+    # Estes sao os campos que estao faltando nos seus logs
+    TT_ACCOUNT_ID: str = Field(..., description="ID da conta TickTrader (para WebSocket).")
+    TT_PASSWORD: SecretStr = Field(..., description="Senha da conta TickTrader (para WebSocket).")
+    
+    TT_SERVER_TYPE: Literal["demo", "live"] = Field(default="demo", description="Tipo de servidor TickTrader (demo ou live).")
+    
+    # URLs sao agora campos normais, pois podem ser diferentes entre brokers
+    # Removido HttpUrl para WSS pois Pydantic pode ter problemas com wss:// como scheme http/https
+    TT_WEBSOCKET_URL_DEMO: str = Field(default="wss://ttdemofeed.fxopen.net/feed", description="URL do WebSocket de Feed TickTrader para Demo.")
+    TT_WEBSOCKET_URL_LIVE: str = Field(default="wss://ttlivefeed.fxopen.net/feed", description="URL do WebSocket de Feed TickTrader para Live.")
+    TT_TRADE_WEBSOCKET_URL_DEMO: str = Field(default="wss://ttdemotrade.fxopen.net/trade", description="URL do WebSocket de Trade TickTrader para Demo.")
+    TT_TRADE_WEBSOCKET_URL_LIVE: str = Field(default="wss://ttlivetrade.fxopen.net/trade", description="URL do WebSocket de Trade TickTrader para Live.")
+    
+    TT_REST_API_URL_DEMO: str = Field(default="https://marginalttdemowebapi.fxopen.net", description="URL da API REST TickTrader para Demo.")
+    TT_REST_API_URL_LIVE: str = Field(default="https://marginalttlivewebapi.fxopen.net", description="URL da API REST TickTrader para Live.")
 
-    # Tendência Forte
-    TREND_ADX_MIN: int = 25
-    TREND_R2_MIN: float = 0.8
-    TREND_WINDOW: int = 250  # ticks
+    model_config = SettingsConfigDict(
+        env_prefix='TT_', # Pydantic procurara por TT_ACCOUNT_ID, TT_PASSWORD, etc.
+        env_file=str(env_file_path) if env_file_path.exists() else None, # So carregar se existir
+        env_file_encoding='utf-8', 
+        extra='ignore',
+        validate_default=True # Forcar validacao mesmo para campos com default
+    )
 
-    # Lateral/Range
-    RANGE_BB_LOW: float = 0.2
-    RANGE_BB_HIGH: float = 0.8
-    RANGE_WINDOW: int = 500  # ticks
+class TradingConfig(BaseSettings):
+    """Configuracoes principais do bot de trading."""
+    APP_NAME: str = "TradingBotFX_Eliabe"
+    ENVIRONMENT: Literal["development", "staging", "production"] = "development"
+    LOG_LEVEL: str = "INFO"
+    DEBUG_MODE: bool = False
 
-    # Alta Volatilidade
-    VOLATILITY_ATR_PERCENTILE: int = 95
-    VOLATILITY_SPREAD_DELTA: int = 5  # ticks # Ajustado de float para int baseado no nome da variável
-    VOLATILITY_WINDOW: int = 30  # segundos
+    SYMBOL: str = "EURUSD"
+    LEVERAGE: int = 500
+    MAX_SPREAD_PIP: float = 3.0 
+    MAX_SLIPPAGE_PIP: float = 1.5
 
-    # Baixo Volume
-    LOW_VOLUME_DEPTH: int = 50000  # USD
-    LOW_VOLUME_WINDOW: int = 300  # segundos (5 min)
+    BASE_CURRENCY: str = "USD" 
+    QUOTE_CURRENCY: str = "EUR" 
 
-@dataclass
-class StrategyCategories:
-    """Categorias e quantidade de estratégias"""
+    TICKTRADER_CREDS: TickTraderCredentials = TickTraderCredentials() # Aqui ocorre a validacao
 
-    CATEGORIES: Dict[str, Dict[str, Any]] = {
-        "momentum": {
-            "count": 25,
-            "examples": [
-                "DonchianBreak55",
-                "EMAStack_8_21_50",
-                "IchimokuKumo",
-                "CCI_ADX",
-                "HeikinAshiTrend",
-                "ParabolicSAR",
-                "SuperTrend",
-                "MACD_Signal",
-                "RSI_Divergence",
-                "DMI_CrossOver"
-            ]
-        },
-        "mean_reversion": {
-            "count": 20,
-            "examples": [
-                "ZScoreVWAP",
-                "RSI2",
-                "BollingerBandFade",
-                "KeltnerTouch",
-                "StochasticOversold",
-                "MeanReversionChannel",
-                "PairDeviation",
-                "VolumeWeightedReversal",
-                "GapFade",
-                "ExtremeBounce"
-            ]
-        },
-        "breakout": {
-            "count": 15,
-            "examples": [
-                "RangeExpansionIndex",
-                "ATRChannelBreakout",
-                "LondonOpeningRange",
-                "VolatilityBreakout",
-                "DonchianChannel",
-                "PivotPointBreak",
-                "FibonacciBreakout",
-                "TriangleBreak",
-                "FlagPattern",
-                "WedgeBreakout"
-            ]
-        },
-        "orderflow": {
-            "count": 15,
-            "examples": [
-                "OrderFlowImbalance",
-                "CumulativeDeltaFlip",
-                "QueuePositionEdge",
-                "VolumeProfilePOC",
-                "FootprintPattern",
-                "DOMImbalance",
-                "TradeIntensity",
-                "LargeOrderDetection",
-                "AbsorptionPattern",
-                "SweepDetector"
-            ]
-        },
-        "ml_predictive": {
-            "count": 15,
-            "examples": [
-                "GradientBoostSHAP",
-                "CNN1DTicks",
-                "TFTSeqToOne",
-                "LSTMPricePredict",
-                "RandomForestFeatures",
-                "XGBoostSignals",
-                "NeuralNetEnsemble",
-                "AutoEncoder",
-                "ReinforcementLearning",
-                "TransformerModel"
-            ]
-        },
-        "arbitrage": {
-            "count": 5,
-            "examples": [
-                "EURUSD_DXY_Hedge",
-                "EURJPY_GBPUSD_Ratio",
-                "TriangularArb",
-                "CrossPairSpread",
-                "CorrelationTrade"
-            ]
-        },
-        "news_aware": {
-            "count": 5,
-            "examples": [
-                "NewsGapFade",
-                "EconomicCalendarFilter",
-                "SentimentShift",
-                "NewsSpikeFade",
-                "PreNewsPositioning"
-            ]
-        },
-        "liquidity_hunt": {
-            "count": 5,
-            "examples": [
-                "DepthSweepDetector",
-                "LastLookReversal",
-                "StopHuntPattern",
-                "LiquidityVoid",
-                "HiddenOrderDetection"
-            ]
-        },
-        "overnight_carry": {
-            "count": 5,
-            "examples": [
-                "SwapBiasNYClose",
-                "RolloverArbitrage",
-                "CarryTrade",
-                "OvernightGap",
-                "SessionTransition"
-            ]
-        }
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[SecretStr] = None
+    REDIS_TTL_HOURS: int = 72 
+
+    PARQUET_PATH: str = str(PROJECT_ROOT / "data" / "parquet_data")
+    TICK_HISTORY_YEARS: int = 1 # Default alterado para 1 ano para consistencia
+    MAX_RECENT_TICKS: int = 20000 
+
+    NTP_SERVER: str = "a.st1.ntp.br" 
+    NTP_SYNC_INTERVAL_SECONDS: int = 1800 
+
+    ORCHESTRATOR_LOOP_INTERVAL_SECONDS: float = 0.1 
+    HEARTBEAT_INTERVAL_SECONDS: int = 60
+
+    GLOBAL_MAX_DRAWDOWN_PERCENT: float = 15.0 
+    GLOBAL_MAX_DAILY_LOSS_PERCENT: float = 5.0 
+    TARGET_DAILY_PROFIT_PERCENT: float = 3.0 
+
+    MODELS_PATH: str = str(PROJECT_ROOT / "models")
+    LOG_PATH: str = str(PROJECT_ROOT / "logs")
+    DATA_PATH: str = str(PROJECT_ROOT / "data") 
+
+    DOM_LEVELS: int = 10 
+
+    REGIME_CONFIDENCE_THRESHOLD: float = 0.60 
+    REGIME_UPDATE_MS: int = 60000 
+
+    SCORE_UPDATE_MINUTES: int = 30 
+    SCORE_UPDATE_TRADES: int = 10 
+    MAX_ACTIVE_STRATEGIES: int = 3 
+    MIN_STRATEGY_SCORE_TO_ACTIVATE: float = 0.5 
+
+    ORDER_TIMEOUT_MS: int = 10000 
+
+    SESSION_CONFIG: Dict[str, Dict[str, int]] = {
+        "ASIA": {"start_hour": 23, "end_hour": 8}, 
+        "LONDON": {"start_hour": 7, "end_hour": 16},
+        "NEWYORK": {"start_hour": 13, "end_hour": 22},
+        "OVERLAP_ASIA_LONDON": {"start_hour": 7, "end_hour": 8}, 
+        "OVERLAP_LONDON_NY": {"start_hour": 13, "end_hour": 16}  
     }
+    FOREX_MARKET_CLOSE_HOUR_FRIDAY_UTC: int = 21 
+    FOREX_MARKET_OPEN_HOUR_SUNDAY_UTC: int = 21  
 
-# Removida a função load_config e save_config daqui,
-# pois a dataclass agora carrega diretamente de os.getenv.
-# A instanciação direta é suficiente.
+    model_config = SettingsConfigDict(env_prefix='', env_file=str(env_file_path) if env_file_path.exists() else None, env_file_encoding='utf-8', extra='ignore', validate_default=True)
 
-# Instância global de configuração
-CONFIG = TradingConfig()
-REGIME_CONFIG = RegimeThresholds()
-STRATEGY_CONFIG = StrategyCategories()
+class RegimeDetectionConfig(BaseSettings):
+    """Configuracoes para o detector de regime de mercado."""
+    TREND_WINDOW: int = Field(default=100, description="Janela para calculo de tendencia (ex: regressao linear, ADX).")
+    VOLATILITY_WINDOW: int = Field(default=20, description="Janela para calculo de volatilidade (ex: ATR).")
+    
+    VOLATILITY_ATR_PERCENTILE: int = Field(default=75, description="Percentil de ATR para definir 'alta volatilidade'.")
+    VOLATILITY_SPREAD_DELTA: float = Field(default=3.0, description="Spread em pips acima do qual pode indicar alta volatilidade.") 
 
-# Para garantir que os diretórios existam ao carregar as settings
-Path(CONFIG.PARQUET_PATH).mkdir(parents=True, exist_ok=True)
-Path(os.path.dirname(CONFIG.SQLITE_PATH)).mkdir(parents=True, exist_ok=True)
-Path(CONFIG.MODELS_PATH).mkdir(parents=True, exist_ok=True)
-Path(CONFIG.LOG_PATH).mkdir(parents=True, exist_ok=True)
-Path(CONFIG.DATA_DIR).mkdir(parents=True, exist_ok=True) # Garante que o diretório de dados geral exista
-Path(CONFIG.LOG_DIR).mkdir(parents=True, exist_ok=True)   # Garante que o diretório de logs geral exista
+    TREND_ADX_MIN: float = Field(default=25.0, description="Valor minimo do ADX para considerar tendencia.")
+    TREND_R2_MIN: float = Field(default=0.3, description="Valor minimo do R2 da regressao linear para considerar tendencia.")
+    
+    RANGE_BB_LOW: float = Field(default=0.2, description="Limite inferior do %B da Bollinger Band para range (ex: 0.2).")
+    RANGE_BB_HIGH: float = Field(default=0.8, description="Limite superior do %B da Bollinger Band para range (ex: 0.8).")
+
+    RF_N_ESTIMATORS: int = Field(default=150, description="Numero de arvores no RandomForest do regime.")
+    RF_MAX_DEPTH: Optional[int] = Field(default=15, description="Profundidade maxima das arvores.")
+    RF_MIN_SAMPLES_SPLIT: int = Field(default=5, description="Minimo de amostras para dividir um no.")
+    RF_MIN_SAMPLES_LEAF: int = Field(default=3, description="Minimo de amostras em uma folha.")
+
+    model_config = SettingsConfigDict(env_prefix='REGIME_', env_file=str(env_file_path) if env_file_path.exists() else None, env_file_encoding='utf-8', extra='ignore', validate_default=True)
+
+class DataManagerConfig(BaseSettings):
+    RECENT_TICKS_LOOKBACK_MINUTES: int = Field(default=120, description="Minutos de lookback para buscar ticks recentes se nao estiverem no cache.")
+    OHLC_LOOKBACK_DAYS: int = Field(default=30, description="Dias de lookback para calcular OHLC se os ticks nao forem fornecidos.")
+    STRATEGY_PARAMS_TTL_DAYS: int = Field(default=7, description="TTL em dias para parametros de estrategia otimizados no cache Redis.")
+    
+    model_config = SettingsConfigDict(env_prefix='DM_', env_file=str(env_file_path) if env_file_path.exists() else None, env_file_encoding='utf-8', extra='ignore', validate_default=True)
+
+# ==============================================================================
+# INSTANCIAS DAS CONFIGURACOES (Carregar e exportar)
+# ==============================================================================
+try:
+    CONFIG = TradingConfig()
+    REGIME_CONFIG = RegimeDetectionConfig()
+    DATA_MANAGER_CONFIG = DataManagerConfig() 
+
+    print(f"Configuracao Principal Carregada. APP_NAME: {CONFIG.APP_NAME}, SYMBOL: {CONFIG.SYMBOL}")
+    print(f"  Credenciais TT carregadas: ACCOUNT_ID='{CONFIG.TICKTRADER_CREDS.TT_ACCOUNT_ID}'") # Log para confirmar
+    print(f"Configuracao de Regime Carregada. TREND_WINDOW: {REGIME_CONFIG.TREND_WINDOW}")
+    print(f"Configuracao do Data Manager Carregada. RECENT_TICKS_LOOKBACK_MINUTES: {DATA_MANAGER_CONFIG.RECENT_TICKS_LOOKBACK_MINUTES}")
+
+except Exception as e:
+    print(f"ERRO CRITICO AO CARREGAR CONFIGURACOES em settings.py: {e}")
+    print("   Verifique seu arquivo .env e as definicoes das classes de configuracao Pydantic.")
+    # Fallback apenas para permitir importacoes em outros modulos se settings falhar completamente
+    class FallbackCreds(BaseModel): TT_ACCOUNT_ID: str = "fallback_id"; TT_PASSWORD: str ="fallback_pass"; TT_SERVER_TYPE: str="demo"; TT_WEBSOCKET_URL_DEMO:str="wss://dummy";TT_WEBSOCKET_URL_LIVE:str="wss://dummy";TT_TRADE_WEBSOCKET_URL_DEMO:str="wss://dummy";TT_TRADE_WEBSOCKET_URL_LIVE:str="wss://dummy";TT_REST_API_URL_DEMO:str="https://dummy";TT_REST_API_URL_LIVE:str="https://dummy" # Adicionado todos os campos obrigatorios
+    class FallbackConfig(BaseModel): TICKTRADER_CREDS: FallbackCreds = FallbackCreds(); SYMBOL:str="EURUSD"; PARQUET_PATH:str="data"; REDIS_HOST:str="localhost"; REDIS_PORT:int=6379; REDIS_DB:int=0; REDIS_TTL_HOURS:int=1; MAX_RECENT_TICKS:int=1000
+    class FallbackRegime(BaseModel): TREND_WINDOW:int=50
+    class FallbackDMConfig(BaseModel): RECENT_TICKS_LOOKBACK_MINUTES:int=60; OHLC_LOOKBACK_DAYS:int=10; STRATEGY_PARAMS_TTL_DAYS:int=7
+
+    if 'CONFIG' not in locals() or CONFIG is None: CONFIG = FallbackConfig() #type: ignore
+    if 'REGIME_CONFIG' not in locals() or REGIME_CONFIG is None: REGIME_CONFIG = FallbackRegime() #type: ignore
+    if 'DATA_MANAGER_CONFIG' not in locals() or DATA_MANAGER_CONFIG is None: DATA_MANAGER_CONFIG = FallbackDMConfig() #type: ignore
+    print("   Usando configuracoes de fallback devido a erro.")
